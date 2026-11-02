@@ -18,6 +18,112 @@ app.use(express.json({
   }
 }));
 
+// Multiple replies for different types of messages.
+const REPLIES = {
+  greetings: [
+    "Hello! How are you?",
+    "Hey there! What's up?",
+    "Hi! Welcome!",
+    "Hello! Nice to see you!",
+    "Hey! How's your day going?",
+    "Hi there! What's happening?",
+    "Hello! How can I help you?"
+  ],
+
+  morning: [
+    "Good morning! Have a wonderful day!",
+    "Morning! Hope you slept well!",
+    "Good morning! What's your plan today?",
+    "Rise and shine! Have a great day!"
+  ],
+
+  afternoon: [
+    "Good afternoon! How's your day?",
+    "Hope you're having a great afternoon!",
+    "Good afternoon! What's up?"
+  ],
+
+  evening: [
+    "Good evening! How are you?",
+    "Hope you had a wonderful day!",
+    "Good evening! What's happening?"
+  ],
+
+  thanks: [
+    "You're welcome!",
+    "No problem!",
+    "Anytime!",
+    "Glad I could help!",
+    "You're very welcome!"
+  ],
+
+  questions: [
+    "That's a good question!",
+    "Hmm, let me think about that!",
+    "Could you tell me a little more?",
+    "Interesting! Tell me more.",
+    "I'm listening!"
+  ],
+
+  goodbye: [
+    "Goodbye! Take care!",
+    "See you later!",
+    "Have a wonderful day!",
+    "Bye! Talk to you soon!"
+  ],
+
+  fallback: [
+    "Interesting! Tell me more.",
+    "I see! What happened next?",
+    "Haha, really?",
+    "That's interesting!",
+    "I'm listening!",
+    "What do you think about it?",
+    "Tell me more!",
+    "Oh really?",
+    "Got it!",
+    "Thanks for sharing!"
+  ]
+};
+
+function randomReply(messages) {
+  return messages[Math.floor(Math.random() * messages.length)];
+}
+
+function chooseReply(message) {
+  const text = message.toLowerCase().trim();
+
+  if (/^(hi|hello|hey|hii|hiii|yo)\b/.test(text)) {
+    return randomReply(REPLIES.greetings);
+  }
+
+  if (/good morning|morning/.test(text)) {
+    return randomReply(REPLIES.morning);
+  }
+
+  if (/good afternoon|afternoon/.test(text)) {
+    return randomReply(REPLIES.afternoon);
+  }
+
+  if (/good evening|evening/.test(text)) {
+    return randomReply(REPLIES.evening);
+  }
+
+  if (/thank|thanks|thx/.test(text)) {
+    return randomReply(REPLIES.thanks);
+  }
+
+  if (/bye|goodbye|see you|gtg/.test(text)) {
+    return randomReply(REPLIES.goodbye);
+  }
+
+  if (text.endsWith("?")) {
+    return randomReply(REPLIES.questions);
+  }
+
+  return randomReply(REPLIES.fallback);
+}
+
 app.get("/health", (req, res) => {
   res.json({
     ok: true,
@@ -69,13 +175,13 @@ async function sendText(recipientId, message) {
   }
 
   const url =
-    \`https://graph.facebook.com/\${GRAPH_VERSION}/me/messages\`;
+    `https://graph.facebook.com/${GRAPH_VERSION}/me/messages`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: \`Bearer \${PAGE_ACCESS_TOKEN}\`
+      Authorization: `Bearer ${PAGE_ACCESS_TOKEN}`
     },
     body: JSON.stringify({
       recipient: { id: recipientId },
@@ -102,9 +208,10 @@ async function handleEvent(event) {
 
   if (process.env.AUTO_REPLY_ENABLED !== "true") return;
 
-  const reply =
-    process.env.AUTO_REPLY_MESSAGE ||
-    "Hello! I'm Andar. How can I help you?";
+  const reply = chooseReply(incoming);
+
+  console.log("[ANDAR] Incoming:", incoming);
+  console.log("[ANDAR] Reply:", reply);
 
   await sendText(event.sender.id, reply);
 }
@@ -130,5 +237,5 @@ app.post("/webhook", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(\`[ANDAR] Running on port \${PORT}\`);
+  console.log(`[ANDAR] Running on port ${PORT}`);
 });
