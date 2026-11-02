@@ -1,0 +1,48 @@
+
+{
+  "greetings": [
+    "Hello!",
+    "Hey there!",
+    "Hi! How are you?",
+    "What's up?",
+    "Nice to see you!"
+  ],
+  "morning": [
+    "Good morning!",
+    "Have a wonderful day!",
+    "Morning! How did you sleep?"
+  ],
+  "afternoon": [
+    "Good afternoon!",
+    "How's your day going?"
+  ],
+  "evening": [
+    "Good evening!",
+    "How was your day?"
+  ],
+  "thanks": [
+    "You're welcome!",
+    "No problem!",
+    "Anytime!"
+  ],
+  "questions": [
+    "That's interesting!",
+    "Tell me more!",
+    "What do you think?",
+    "I'm listening!"
+  ],
+  "goodbye": [
+    "See you later!",
+    "Take care!",
+    "Goodbye!"
+  ],
+  "fallback": [
+    "Really?",
+    "Haha!",
+    "Interesting!",
+    "Tell me more!",
+    "I see!",
+    "Oh, really?",
+    "Got it!"
+  ]
+}
