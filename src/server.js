@@ -5,294 +5,403 @@ const express = require("express");
 const crypto = require("crypto");
 
 const app = express();
-
-// ==============================
-// CONFIGURATION
-// ==============================
+app.use(express.json({ limit: "50kb" }));
 
 const PORT = process.env.PORT || 3000;
+const API_KEY = String(
+  process.env.ECLIPSE_DASHBOARD_API_KEY || ""
+).trim();
 
-const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
-const PAGE_ACCESS_TOKEN = process.env.META_PAGE_ACCESS_TOKEN || "";
-const APP_SECRET = process.env.META_APP_SECRET || "";
-
-const GRAPH_VERSION =
-  process.env.META_GRAPH_API_VERSION || "v23.0";
-
-const AUTO_REPLY_ENABLED =
-  String(process.env.AUTO_REPLY_ENABLED || "false").toLowerCase() === "true";
-
-// ==============================
-// RANDOM REPLIES
-// ==============================
-
-const RANDOM_REPLIES = [
+const defaultReplies = [
   "Hello!",
-  "Hi!",
-  "Hey!",
-  "Okay!",
   "Really?",
+  "Okay!",
+  "HAHA!",
+  "I see.",
   "Nice!",
-  "Cool!",
-  "Interesting!",
-  "Haha!",
-  "LOL!",
-  "Wow!",
-  "Amazing!",
+  "Ohh!",
   "Sure!",
-  "Alright!",
-  "Maybe!",
-  "Of course!",
-  "I see!",
-  "What's up?",
-  "How are you?",
-  "Good!",
-  "Great!",
-  "Not bad!",
-  "Thanks!",
-  "You're welcome!",
-  "Hmm...",
-  "Oh!",
-  "Yeah!",
-  "No way!",
-  "Let's go!",
-  "Wonderful!",
-  "Indeed!",
-  "Got it!",
-  "Take care!",
-  "See you!",
-  "Perfect!",
-  "Awesome!",
-  "Random!",
-  "Let's see!",
-  "Why not?",
-  "Okay then!"
+  "Interesting!",
+  "Alright!"
 ];
 
-function randomReply() {
-  const index = Math.floor(Math.random() * RANDOM_REPLIES.length);
-  return RANDOM_REPLIES[index];
+const settings = {
+  enabled: false,
+  cooldown: 10,
+  startTime: "08:00",
+  endTime: "22:00",
+  replies: [...defaultReplies]
+};
+
+function isConfigured(name) {
+  return Boolean(String(process.env[name] || "").trim());
 }
 
-// ==============================
-// RAW BODY FOR SIGNATURE CHECK
-// ==============================
-
-app.use(
-  express.json({
-    verify: (req, res, buffer) => {
-      req.rawBody = buffer;
-    }
-  })
-);
-
-// ==============================
-// META SIGNATURE VALIDATION
-// ==============================
-
-function validSignature(req) {
-  if (!APP_SECRET || !req.rawBody) {
-    return false;
+function authenticate(req, res, next) {
+  if (!API_KEY) {
+    return res.status(503).json({
+      error: "ECLIPSE_DASHBOARD_API_KEY is not configured."
+    });
   }
 
-  const signature = req.get("x-hub-signature-256");
+  const supplied = String(
+    req.headers.authorization || ""
+  ).replace(/^Bearer\s+/i, "");
 
-  if (!signature || !signature.startsWith("sha256=")) {
-    return false;
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(API_KEY);
+
+  if (
+    a.length !== b.length ||
+    !crypto.timingSafeEqual(a, b)
+  ) {
+    return res.status(401).json({
+      error: "Invalid dashboard API key."
+    });
   }
 
-  const expected =
-    "sha256=" +
-    crypto
-      .createHmac("sha256", APP_SECRET)
-      .update(req.rawBody)
-      .digest("hex");
-
-  const receivedBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expected);
-
-  if (receivedBuffer.length !== expectedBuffer.length) {
-    return false;
-  }
-
-  return crypto.timingSafeEqual(receivedBuffer, expectedBuffer);
+  next();
 }
 
-// ==============================
-// SEND MESSENGER MESSAGE
-// ==============================
+function isWithinSchedule() {
+  const now = new Date();
+  const current = now.getHours() * 60 + now.getMinutes();
 
-async function sendText(recipientId, messageText) {
-  if (!PAGE_ACCESS_TOKEN) {
-    throw new Error("META_PAGE_ACCESS_TOKEN is missing.");
+  const [sh, sm] = settings.startTime.split(":").map(Number);
+  const [eh, em] = settings.endTime.split(":").map(Number);
+
+  const start = sh * 60 + sm;
+  const end = eh * 60 + em;
+
+  if (start === end) return true;
+
+  if (start < end) {
+    return current >= start && current < end;
   }
 
-  const url =
-    "https://graph.facebook.com/" +
-    GRAPH_VERSION +
-    "/me/messages";
+  return current >= start || current < end;
+}
 
-  const response = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: "Bearer " + PAGE_ACCESS_TOKEN
+function getStatus() {
+  return {
+    dashboard: "online",
+    autoResponse: settings.enabled,
+    scheduleActive: isWithinSchedule(),
+    cooldown: settings.cooldown,
+    startTime: settings.startTime,
+    endTime: settings.endTime,
+    replies: settings.replies,
+    facebookConfiguration: {
+      appstateConfigured: isConfigured("FB_APPSTATE"),
+      cookiesConfigured: isConfigured("FB_COOKIES")
     },
-    body: JSON.stringify({
-      recipient: {
-        id: recipientId
-      },
-      messaging_type: "RESPONSE",
-      message: {
-        text: messageText
-      }
-    })
-  });
-
-  const result = await response.json();
-
-  if (!response.ok) {
-    console.error("[MESSENGER ERROR]", result);
-    throw new Error("Messenger API request failed.");
-  }
-
-  console.log("[MESSAGE SENT]", recipientId);
+    encryptionKeyConfigured:
+      isConfigured("ECLIPSE_SESSION_ENCRYPTION_KEY") &&
+      Buffer.byteLength(
+        process.env.ECLIPSE_SESSION_ENCRYPTION_KEY,
+        "utf8"
+      ) >= 32
+  };
 }
-
-// ==============================
-// DUPLICATE MESSAGE PROTECTION
-// ==============================
-
-const processedMessages = new Set();
-
-function alreadyProcessed(messageId) {
-  if (!messageId) return false;
-
-  if (processedMessages.has(messageId)) {
-    return true;
-  }
-
-  processedMessages.add(messageId);
-
-  if (processedMessages.size > 5000) {
-    const oldest = processedMessages.values().next().value;
-    processedMessages.delete(oldest);
-  }
-
-  return false;
-}
-
-// ==============================
-// PROCESS INCOMING MESSAGE
-// ==============================
-
-async function processMessage(event) {
-  try {
-    if (!AUTO_REPLY_ENABLED) return;
-
-    if (!event.sender || !event.sender.id) return;
-    if (!event.message) return;
-    if (event.message.is_echo) return;
-    if (!event.message.text) return;
-
-    if (alreadyProcessed(event.message.mid)) return;
-
-    const incomingText = event.message.text.trim();
-
-    if (!incomingText) return;
-
-    const reply = randomReply();
-
-    console.log("[ANDAR] Incoming:", incomingText);
-    console.log("[ANDAR] Reply:", reply);
-
-    await sendText(event.sender.id, reply);
-
-  } catch (error) {
-    console.error("[MESSAGE PROCESSING ERROR]", error.message);
-  }
-}
-
-// ==============================
-// HEALTH CHECK
-// ==============================
-
-app.get("/", (req, res) => {
-  res.status(200).send("Andar Messenger Bot is running.");
-});
 
 app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "online",
-    bot: "Andar",
-    autoReply: AUTO_REPLY_ENABLED
+  res.json({ status: "ok" });
+});
+
+app.get("/", (req, res) => {
+  res.redirect("/dashboard");
+});
+
+app.get("/dashboard", (req, res) => {
+  res.type("html").send(`
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Andar Dashboard</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #10121a;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+    .card {
+      background: #1c2030;
+      padding: 18px;
+      border-radius: 12px;
+      margin-bottom: 15px;
+    }
+    input, textarea, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 12px;
+      margin: 7px 0;
+      border-radius: 7px;
+      border: 0;
+    }
+    button {
+      background: #5865f2;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    .status { color: #9ee6a4; }
+    .warning { color: #ffd166; }
+  </style>
+</head>
+<body>
+  <h2>ANDAR Messenger Dashboard</h2>
+
+  <div class="card">
+    <h3>Dashboard connection</h3>
+    <input id="key" type="password" placeholder="Dashboard API key">
+    <button onclick="connect()">Connect</button>
+    <p id="connection">Not connected</p>
+  </div>
+
+  <div id="panel" style="display:none">
+    <div class="card">
+      <h3>Bot status</h3>
+      <p id="status"></p>
+      <p id="facebook"></p>
+      <p id="encryption"></p>
+    </div>
+
+    <div class="card">
+      <h3>Auto-response setting</h3>
+      <button onclick="toggleBot()">Toggle ON / OFF</button>
+      <p id="enabled"></p>
+    </div>
+
+    <div class="card">
+      <h3>Cooldown</h3>
+      <input id="cooldown" type="number" min="1" max="3600">
+      <button onclick="saveCooldown()">Save cooldown</button>
+    </div>
+
+    <div class="card">
+      <h3>Schedule</h3>
+      <label>Start time</label>
+      <input id="start" type="time">
+      <label>End time</label>
+      <input id="end" type="time">
+      <button onclick="saveSchedule()">Save schedule</button>
+      <p>Overnight schedules are supported.</p>
+    </div>
+
+    <div class="card">
+      <h3>Random replies</h3>
+      <textarea id="replies" rows="10"></textarea>
+      <button onclick="saveReplies()">Save replies</button>
+      <button onclick="preview()">Preview random reply</button>
+      <p id="preview"></p>
+    </div>
+  </div>
+
+<script>
+let apiKey = "";
+
+async function api(path, method = "GET", body) {
+  const response = await fetch(path, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer " + apiKey
+    },
+    body: body ? JSON.stringify(body) : undefined
   });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error || "Request failed");
+  }
+
+  return data;
+}
+
+async function connect() {
+  apiKey = document.getElementById("key").value.trim();
+
+  try {
+    await refresh();
+    document.getElementById("panel").style.display = "block";
+    document.getElementById("connection").textContent =
+      "Connected successfully";
+  } catch (error) {
+    document.getElementById("connection").textContent =
+      error.message;
+  }
+}
+
+async function refresh() {
+  const data = await api("/api/status");
+
+  document.getElementById("status").textContent =
+    "Dashboard: " + data.dashboard +
+    " | Schedule active: " + data.scheduleActive;
+
+  document.getElementById("enabled").textContent =
+    "Auto-response: " +
+    (data.autoResponse ? "ON" : "OFF");
+
+  document.getElementById("facebook").textContent =
+    "FB_APPSTATE: " +
+    (data.facebookConfiguration.appstateConfigured
+      ? "Configured" : "Missing") +
+    " | FB_COOKIES: " +
+    (data.facebookConfiguration.cookiesConfigured
+      ? "Configured" : "Missing");
+
+  document.getElementById("encryption").textContent =
+    "Encryption key length check: " +
+    (data.encryptionKeyConfigured ? "Passed" : "Missing or too short");
+
+  document.getElementById("cooldown").value = data.cooldown;
+  document.getElementById("start").value = data.startTime;
+  document.getElementById("end").value = data.endTime;
+  document.getElementById("replies").value =
+    data.replies.join("\\n");
+}
+
+async function toggleBot() {
+  try {
+    const data = await api("/api/toggle", "POST");
+    document.getElementById("enabled").textContent =
+      "Auto-response: " + (data.enabled ? "ON" : "OFF");
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function saveCooldown() {
+  try {
+    await api("/api/settings", "POST", {
+      cooldown: Number(document.getElementById("cooldown").value)
+    });
+    alert("Cooldown saved");
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function saveSchedule() {
+  try {
+    await api("/api/settings", "POST", {
+      startTime: document.getElementById("start").value,
+      endTime: document.getElementById("end").value
+    });
+    alert("Schedule saved");
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function saveReplies() {
+  try {
+    await api("/api/settings", "POST", {
+      replies: document.getElementById("replies").value
+        .split("\\n")
+        .map(x => x.trim())
+        .filter(Boolean)
+    });
+    alert("Replies saved");
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function preview() {
+  try {
+    const data = await api("/api/preview");
+    document.getElementById("preview").textContent =
+      "Random reply: " + data.reply;
+  } catch (error) {
+    alert(error.message);
+  }
+}
+</script>
+</body>
+</html>
+  `);
 });
 
-// ==============================
-// META WEBHOOK VERIFICATION
-// ==============================
+app.use("/api", authenticate);
 
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("[WEBHOOK] Verified");
-    return res.status(200).send(challenge);
-  }
-
-  return res.sendStatus(403);
+app.get("/api/status", (req, res) => {
+  res.json(getStatus());
 });
 
-// ==============================
-// RECEIVE MESSENGER EVENTS
-// ==============================
+app.post("/api/toggle", (req, res) => {
+  settings.enabled = !settings.enabled;
+  res.json({ enabled: settings.enabled });
+});
 
-app.post("/webhook", (req, res) => {
-  if (!validSignature(req)) {
-    console.error("[WEBHOOK] Invalid signature or missing app secret.");
-    return res.sendStatus(403);
+app.post("/api/settings", (req, res) => {
+  const body = req.body || {};
+
+  if (body.cooldown !== undefined) {
+    const value = Number(body.cooldown);
+
+    if (!Number.isInteger(value) || value < 1 || value > 3600) {
+      return res.status(400).json({
+        error: "Cooldown must be between 1 and 3600 seconds."
+      });
+    }
+
+    settings.cooldown = value;
   }
 
-  if (req.body.object !== "page") {
-    return res.sendStatus(404);
+  if (body.startTime !== undefined) {
+    if (!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(body.startTime)) {
+      return res.status(400).json({ error: "Invalid start time." });
+    }
+    settings.startTime = body.startTime;
   }
 
-  // Acknowledge Meta immediately.
-  res.sendStatus(200);
+  if (body.endTime !== undefined) {
+    if (!/^([01]\\d|2[0-3]):[0-5]\\d$/.test(body.endTime)) {
+      return res.status(400).json({ error: "Invalid end time." });
+    }
+    settings.endTime = body.endTime;
+  }
 
-  const entries = req.body.entry || [];
+  if (body.replies !== undefined) {
+    if (
+      !Array.isArray(body.replies) ||
+      body.replies.length < 1 ||
+      body.replies.length > 100
+    ) {
+      return res.status(400).json({
+        error: "Provide between 1 and 100 replies."
+      });
+    }
 
-  for (const entry of entries) {
-    const events = entry.messaging || [];
+    settings.replies = body.replies
+      .map(x => String(x).trim().slice(0, 200))
+      .filter(Boolean);
 
-    for (const event of events) {
-      processMessage(event);
+    if (!settings.replies.length) {
+      return res.status(400).json({
+        error: "At least one reply is required."
+      });
     }
   }
+
+  res.json({ success: true, settings });
 });
 
-// ==============================
-// START SERVER
-// ==============================
+app.get("/api/preview", (req, res) => {
+  const replies = settings.replies;
+  const reply = replies[
+    crypto.randomInt(0, replies.length)
+  ];
 
-app.listen(PORT, () => {
-  console.log("--------------------------------");
-  console.log("ANDAR MESSENGER BOT");
-  console.log("--------------------------------");
-  console.log("Port:", PORT);
-  console.log("Auto reply:", AUTO_REPLY_ENABLED ? "ON" : "OFF");
-  console.log("Graph API:", GRAPH_VERSION);
-  console.log("Webhook: /webhook");
-  console.log("--------------------------------");
+  res.json({ reply });
+});
 
-  if (!APP_SECRET) {
-    console.error("[CONFIG WARNING] META_APP_SECRET is missing.");
-  }
-
-  if (!PAGE_ACCESS_TOKEN) {
-    console.error("[CONFIG WARNING] META_PAGE_ACCESS_TOKEN is missing.");
-  }
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("Andar dashboard running on port " + PORT);
 });
