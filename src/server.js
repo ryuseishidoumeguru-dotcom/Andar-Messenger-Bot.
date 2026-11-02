@@ -3,6 +3,7 @@
 
 const crypto = require("node:crypto");
 const express = require("express");
+const REPLIES = require("./replies.json");
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -18,75 +19,11 @@ app.use(express.json({
   }
 }));
 
-// Multiple replies for different types of messages.
-const REPLIES = {
-  greetings: [
-    "Hello! How are you?",
-    "Hey there! What's up?",
-    "Hi! Welcome!",
-    "Hello! Nice to see you!",
-    "Hey! How's your day going?",
-    "Hi there! What's happening?",
-    "Hello! How can I help you?"
-  ],
-
-  morning: [
-    "Good morning! Have a wonderful day!",
-    "Morning! Hope you slept well!",
-    "Good morning! What's your plan today?",
-    "Rise and shine! Have a great day!"
-  ],
-
-  afternoon: [
-    "Good afternoon! How's your day?",
-    "Hope you're having a great afternoon!",
-    "Good afternoon! What's up?"
-  ],
-
-  evening: [
-    "Good evening! How are you?",
-    "Hope you had a wonderful day!",
-    "Good evening! What's happening?"
-  ],
-
-  thanks: [
-    "You're welcome!",
-    "No problem!",
-    "Anytime!",
-    "Glad I could help!",
-    "You're very welcome!"
-  ],
-
-  questions: [
-    "That's a good question!",
-    "Hmm, let me think about that!",
-    "Could you tell me a little more?",
-    "Interesting! Tell me more.",
-    "I'm listening!"
-  ],
-
-  goodbye: [
-    "Goodbye! Take care!",
-    "See you later!",
-    "Have a wonderful day!",
-    "Bye! Talk to you soon!"
-  ],
-
-  fallback: [
-    "Interesting! Tell me more.",
-    "I see! What happened next?",
-    "Haha, really?",
-    "That's interesting!",
-    "I'm listening!",
-    "What do you think about it?",
-    "Tell me more!",
-    "Oh really?",
-    "Got it!",
-    "Thanks for sharing!"
-  ]
-};
-
 function randomReply(messages) {
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return "Hello! I'm Andar. How can I help you?";
+  }
+
   return messages[Math.floor(Math.random() * messages.length)];
 }
 
@@ -124,7 +61,7 @@ function chooseReply(message) {
   return randomReply(REPLIES.fallback);
 }
 
-app.get("/health", (req, res) => {
+app.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "Andar",
@@ -147,7 +84,7 @@ app.get("/webhook", (req, res) => {
 });
 
 function validSignature(req) {
-  if (!APP_SECRET) return true;
+  if (!APP_SECRET) return false;
 
   const header = req.get("x-hub-signature-256") || "";
   const signature = header.startsWith("sha256=")
@@ -175,13 +112,13 @@ async function sendText(recipientId, message) {
   }
 
   const url =
-    `https://graph.facebook.com/${GRAPH_VERSION}/me/messages`;
+    \`https://graph.facebook.com/\${GRAPH_VERSION}/me/messages\`;
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${PAGE_ACCESS_TOKEN}`
+      Authorization: \`Bearer \${PAGE_ACCESS_TOKEN}\`
     },
     body: JSON.stringify({
       recipient: { id: recipientId },
@@ -237,5 +174,5 @@ app.post("/webhook", (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`[ANDAR] Running on port ${PORT}`);
+  console.log(\`[ANDAR] Running on port \${PORT}\`);
 });
